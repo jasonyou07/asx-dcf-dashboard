@@ -1,0 +1,32 @@
+# Local virtual environment — the image installs its own deps from requirements.txt.
+.venv/
+venv/
+
+# Tests and dev-only tooling — not needed at runtime.
+tests/
+pytest.ini
+requirements-dev.txt
+.pytest_cache/
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# VCS / editor / OS cruft
+.git/
+.gitignore
+.vscode/
+.idea/
+.DS_Store
+
+# Claude Code project metadata
+.claude/
+
+# Docs (not needed inside the image)
+README.md
+
+# Docker files themselves
+Dockerfile
+.dockerignore

@@ -1,0 +1,33 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python caches / artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environment variables / secrets — never commit these
+.env
+.env.*
+*.pem
+*.key
+secrets.*
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Claude Code project metadata (local tooling, not part of the app)
+.claude/
+
+# Generated Excel exports (output of the app, not source)
+*.xlsx
