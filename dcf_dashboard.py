@@ -32,16 +32,47 @@ st.caption("Revenue-driven FCF build-up, a fully auditable WACC, and a blended P
 # Data fetching (network — the only part of this file that isn't pure)
 # ---------------------------------------------------------------------------
 
-@st.cache_data(show_spinner=False, ttl=3600)
+FETCH_CACHE_TTL_SECONDS = 3 * 60 * 60  # a few hours — yfinance data doesn't change intraday enough to justify refetching more often
+
+RATE_LIMIT_MESSAGE = (
+    "Yahoo Finance is rate-limiting requests right now (too many requests in a short window — this happens "
+    "to everyone using yfinance occasionally, not just you). It usually clears up within a few minutes — "
+    "wait a bit and click **Fetch & Run Valuation** again."
+)
+
+
+@st.cache_data(show_spinner=False, ttl=FETCH_CACHE_TTL_SECONDS)
 def fetch_ticker_data(ticker: str) -> dict:
-    t = yf.Ticker(ticker)
-    info = t.info or {}
-    return {
-        "info": info,
-        "financials": t.financials,
-        "cashflow": t.cashflow,
-        "balance_sheet": t.balance_sheet,
-    }
+    """Pulls everything the dashboard needs for `ticker` in one cached call.
+    Raises eng.InsufficientDataError with a plain-English message — never a
+    raw traceback — if Yahoo rate-limits us, returns nothing usable, or the
+    request fails outright. Exceptions aren't cached by st.cache_data, so a
+    rate-limited call just retries fresh next click rather than getting
+    stuck returning the same error for the cache's full TTL.
+    """
+    try:
+        t = yf.Ticker(ticker)
+        info = t.info or {}
+        financials = t.financials
+        cashflow = t.cashflow
+        balance_sheet = t.balance_sheet
+    except yf.exceptions.YFRateLimitError as e:
+        raise eng.InsufficientDataError(RATE_LIMIT_MESSAGE) from e
+    except yf.exceptions.YFException as e:
+        raise eng.InsufficientDataError(
+            f"Yahoo Finance couldn't return data for '{ticker}' ({e}). This is usually transient — try again "
+            "in a moment, or double-check the ticker."
+        ) from e
+    except Exception as e:
+        message = str(e)
+        if "429" in message or "Too Many Requests" in message:
+            raise eng.InsufficientDataError(RATE_LIMIT_MESSAGE) from e
+        raise eng.InsufficientDataError(
+            f"Couldn't reach Yahoo Finance for '{ticker}' ({type(e).__name__}: {e}). Check your internet "
+            "connection and try again."
+        ) from e
+
+    return {"info": info, "financials": financials, "cashflow": cashflow, "balance_sheet": balance_sheet}
 
 
 def normalize_ticker(raw: str) -> str:
@@ -56,9 +87,9 @@ def validate_fetched_info(ticker: str, info: dict) -> None:
     has_name = info.get("longName") or info.get("shortName")
     if not info or (not has_price and not has_name):
         raise eng.InsufficientDataError(
-            f"'{ticker}' returned no usable data from Yahoo Finance. Check the ticker is correct and still "
-            "listed — ASX tickers need the '.AX' suffix (e.g. 'BHP.AX'), which is added automatically if you "
-            "don't type it."
+            f"'{ticker}' returned no usable data from Yahoo Finance. Either the ticker is wrong or delisted — "
+            "ASX tickers need the '.AX' suffix (e.g. 'BHP.AX'), which is added automatically if you don't type "
+            "it — or Yahoo returned an empty response, which can happen transiently; try again in a moment."
         )
 
 
@@ -98,9 +129,15 @@ if fetch_clicked:
                 validate_fetched_info(ticker, raw["info"])
             st.session_state["raw_data"] = raw
             st.session_state["fetched_ticker"] = ticker
-        except Exception as e:
+        except eng.DcfError as e:
+            # Our own exceptions (rate-limit, empty data, etc.) already carry
+            # a complete, plain-English message — show it as-is.
             st.session_state.pop("raw_data", None)
-            st.error(f"Couldn't fetch data for '{ticker}': {e}")
+            st.error(str(e))
+        except Exception as e:
+            # Genuinely unexpected failure — wrap it rather than show a bare traceback.
+            st.session_state.pop("raw_data", None)
+            st.error(f"Couldn't fetch data for '{ticker}': {type(e).__name__}: {e}")
 
 if "raw_data" not in st.session_state:
     st.info("Enter an ASX ticker above (e.g. **BHP**) and click **Fetch & Run Valuation**.")

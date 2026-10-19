@@ -5,14 +5,17 @@ Finance's live API either, per the project brief). Confirms the app runs
 cleanly end-to-end: the base case, each manual override, the Excel export
 button, and an invalid-ticker path — no uncaught exceptions anywhere.
 """
+import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
+import yfinance as yf
 from streamlit.testing.v1 import AppTest
 
 DASHBOARD_PATH = str(Path(__file__).resolve().parent.parent / "dcf_dashboard.py")
+DASHBOARD_PATH_TEXT = Path(DASHBOARD_PATH).read_text(encoding="utf-8")
 
 
 def _mock_statement(data: dict) -> pd.DataFrame:
@@ -214,6 +217,62 @@ class TestInvalidTicker:
             at.run()
         assert at.exception == []
         assert len(at.error) > 0
+
+
+class TestRateLimitHandling:
+    """Regression guard: Yahoo rate-limiting (or any yfinance-side failure)
+    must surface as a plain-English st.error, never a raw traceback, and the
+    message must actually say something about rate-limiting — not just a
+    generic 'couldn't fetch' with no explanation of why."""
+
+    def test_yf_rate_limit_error_shows_friendly_message(self):
+        at = AppTest.from_file(DASHBOARD_PATH)
+        with patch("yfinance.Ticker", side_effect=yf.exceptions.YFRateLimitError()):
+            at.run()
+            at.text_input[0].set_value("MOCKRATELIMIT")
+            at.button[0].click()
+            at.run()
+        assert at.exception == []
+        assert len(at.error) > 0
+        assert "rate-limit" in at.error[0].value.lower()
+
+    def test_http_429_in_exception_message_shows_friendly_rate_limit_message(self):
+        """Some yfinance code paths let a raw HTTP error through instead of
+        raising their own typed exception — a '429' in the message should
+        still be recognized and treated the same way."""
+        at = AppTest.from_file(DASHBOARD_PATH)
+        with patch("yfinance.Ticker", side_effect=RuntimeError("HTTP Error 429: Too Many Requests")):
+            at.run()
+            at.text_input[0].set_value("MOCK429")
+            at.button[0].click()
+            at.run()
+        assert at.exception == []
+        assert len(at.error) > 0
+        assert "rate-limit" in at.error[0].value.lower()
+
+    def test_other_yfinance_exception_shows_friendly_message_not_traceback(self):
+        at = AppTest.from_file(DASHBOARD_PATH)
+        with patch("yfinance.Ticker", side_effect=yf.exceptions.YFTickerMissingError("MOCKYFEXC", "no data found")):
+            at.run()
+            at.text_input[0].set_value("MOCKYFEXC")
+            at.button[0].click()
+            at.run()
+        assert at.exception == []
+        assert len(at.error) > 0
+        error_text = at.error[0].value
+        assert "Traceback" not in error_text
+        assert "Yahoo Finance" in error_text
+
+    def test_fetch_is_cached_with_a_few_hours_ttl(self):
+        """FETCH_CACHE_TTL_SECONDS should be 'a few hours', not the old 1-hour
+        default — read straight from source so this doesn't need a live session."""
+        source = DASHBOARD_PATH_TEXT
+        match = re.search(r"FETCH_CACHE_TTL_SECONDS\s*=\s*(.+)", source)
+        assert match, "FETCH_CACHE_TTL_SECONDS constant not found in dcf_dashboard.py"
+        ttl_seconds = eval(match.group(1).split("#")[0].strip())  # trusted: our own source file
+        assert 2 * 3600 <= ttl_seconds <= 6 * 3600, f"expected a 'few hours' TTL (2-6h), got {ttl_seconds}s"
+
+        assert "ttl=FETCH_CACHE_TTL_SECONDS" in source, "fetch_ticker_data's @st.cache_data should use the named TTL constant"
 
 
 class TestExcelExportButton:
